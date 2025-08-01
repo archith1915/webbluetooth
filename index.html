@@ -78,103 +78,118 @@
     <div id="status"></div>
   </div>
   <script>
-    const scanBtn = document.getElementById('scanBtn');
-    const deviceList = document.getElementById('devices');
-    const statusDiv = document.getElementById('status');
-    let devices = [];
+const scanBtn = document.getElementById('scanBtn');
+const deviceList = document.getElementById('devices');
+const statusDiv = document.getElementById('status');
+let devices = [];
 
-    function showStatus(msg, isError = false) {
-      statusDiv.textContent = msg;
-      statusDiv.style.color = isError ? "crimson" : "#1976d2";
-      setTimeout(() => { statusDiv.textContent=''; }, 3500);
+function showStatus(msg, isError = false) {
+  statusDiv.textContent = msg;
+  statusDiv.style.color = isError ? "crimson" : "#1976d2";
+  setTimeout(() => { statusDiv.textContent=''; }, 3000);
+}
+
+function updateDeviceList() {
+  deviceList.innerHTML = '';
+  devices.forEach((item, idx) => {
+    const li = document.createElement('li');
+    li.className = 'device-item';
+    let label = item.device.name || '[Unknown device]';
+    if (item.device.gatt.connected) {
+      label = `${label} • Connected`;
     }
-
-    function updateDeviceList() {
-      deviceList.innerHTML = '';
-      devices.forEach((item, idx) => {
-        const li = document.createElement('li');
-        li.className = 'device-item';
-
-        const info = document.createElement('div');
-        info.className = 'device-info';
-        info.textContent = item.device.name || '[Unnamed]';
-        if (item.device.gatt.connected) info.textContent += ' • Connected';
-
-        let battery = '';
-        if (item.battery !== undefined) {
-          battery = document.createElement('span');
-          battery.className = 'battery-info';
-          battery.textContent = `🔋 ${item.battery}%`;
-        }
-
-        const btn = document.createElement('button');
-        if (!item.device.gatt.connected) {
-          btn.textContent = 'Connect';
-          btn.onclick = () => connectToDevice(idx);
-        } else {
-          btn.textContent = 'Disconnect';
-          btn.onclick = () => disconnectDevice(idx);
-        }
-
-        li.appendChild(info);
-        if (battery) li.appendChild(battery);
-        li.appendChild(btn);
-        deviceList.appendChild(li);
-      });
+    if (!item.device.name && item.device.id) {
+      label += ` (${item.device.id.slice(0, 8)})`;
     }
+    const info = document.createElement('div');
+    info.className = 'device-info';
+    info.textContent = label;
+    if (item.battery !== undefined) {
+      const battery = document.createElement('span');
+      battery.className = 'battery-info';
+      battery.textContent = `🔋 ${item.battery}%`;
+      info.appendChild(battery);
+    }
+    const btn = document.createElement('button');
+    btn.textContent = item.device.gatt.connected ? 'Disconnect' : 'Connect';
+    btn.onclick = () => item.device.gatt.connected
+      ? disconnectDevice(idx)
+      : connectToDevice(idx);
+    li.appendChild(info);
+    li.appendChild(btn);
+    deviceList.appendChild(li);
+  });
+}
 
-    async function connectToDevice(idx) {
-      const item = devices[idx];
-      try {
-        showStatus('Connecting...');
-        await item.device.gatt.connect();
-        const batteryPercent = await getBatteryLevel(item.device);
-        item.battery = batteryPercent;
-        showStatus('Connected!');
-      } catch (err) {
-        showStatus('Connection failed: ' + err.message, true);
-      }
+async function connectToDevice(idx) {
+  const item = devices[idx];
+  try {
+    showStatus('Connecting...');
+    if (!item.device.gatt.connected) {
+      await item.device.gatt.connect();
+    }
+    item.device.addEventListener('gattserverdisconnected', () => {
+      item.battery = undefined;
       updateDeviceList();
-    }
-
-    function disconnectDevice(idx) {
-      const item = devices[idx];
-      if (item.device.gatt.connected) {
-        item.device.gatt.disconnect();
-        showStatus('Disconnected');
-        item.battery = undefined;
-        updateDeviceList();
-      }
-    }
-
-    async function getBatteryLevel(device) {
-      try {
-        const server = await device.gatt.connect();
-        const service = await server.getPrimaryService('battery_service');
-        const characteristic = await service.getCharacteristic('battery_level');
-        const value = await characteristic.readValue();
-        await device.gatt.disconnect();
-        return value.getUint8(0);
-      } catch {
-        return undefined; // Battery info not available
-      }
-    }
-
-    scanBtn.addEventListener('click', async () => {
-      try {
-        let dev = await navigator.bluetooth.requestDevice({
-          acceptAllDevices: true,
-          optionalServices: ['battery_service']
-        });
-        if (!devices.find(d => d.device.id === dev.id)) {
-          devices.push({device: dev});
-        }
-        updateDeviceList();
-        showStatus('Device added. Click Connect to pair.');
-      } catch (e) {
-        showStatus('No device selected', true);
-      }
+      showStatus('Disconnected from device');
     });
+    if (item.device.name === undefined || item.device.name === '') {
+      // Attempt to update the name after connecting
+      item.device.name = item.device.name || item.device.id.slice(0,8);
+    }
+    // Try to get battery level
+    item.battery = await getBatteryLevel(item.device);
+    showStatus('Connected');
+  } catch (err) {
+    showStatus('Connection failed: ' + err.message, true);
+  }
+  updateDeviceList();
+}
+
+function disconnectDevice(idx) {
+  const item = devices[idx];
+  if (item.device.gatt.connected) {
+    item.device.gatt.disconnect();
+    showStatus('Disconnected');
+    item.battery = undefined;
+    updateDeviceList();
+  }
+}
+
+async function getBatteryLevel(device) {
+  try {
+    const server = device.gatt.connected
+      ? device.gatt
+      : await device.gatt.connect();
+    const service = await server.getPrimaryService('battery_service');
+    const characteristic = await service.getCharacteristic('battery_level');
+    const value = await characteristic.readValue();
+    return value.getUint8(0);
+  } catch (e) {
+    return undefined;
+  }
+}
+
+scanBtn.addEventListener('click', async () => {
+  try {
+    let dev = await navigator.bluetooth.requestDevice({
+      acceptAllDevices: true,
+      optionalServices: [
+        'battery_service',
+        'device_information',
+        // Add any other services your device might support here
+      ]
+    });
+    if (!devices.find(d => d.device.id === dev.id)) {
+      devices.push({device: dev});
+    }
+    updateDeviceList();
+    showStatus('Device added. Click Connect to pair.');
+  } catch (e) {
+    showStatus('No device selected', true);
+  }
+});
+
   </script>
 </body>
 </html>
